@@ -22,7 +22,21 @@ from argparse import ArgumentParser
 import dgl  # type:ignore
 import torch
 from ogb.nodeproppred import DglNodePropPredDataset  # type:ignore
+from dgl.data import (
+    CiteseerGraphDataset,
+    CoraGraphDataset,
+    PubmedGraphDataset,
+    register_data_args,
+)
 
+SUPPORTED_DATASETS = {
+    'cora': CoraGraphDataset,
+    'citeseer': CiteseerGraphDataset,
+    'pubmed': PubmedGraphDataset,
+    'ogbn-products': DglNodePropPredDataset,
+    'ogbn-arxiv': DglNodePropPredDataset,
+    'ogbn-mag': DglNodePropPredDataset,
+}
 
 parser = ArgumentParser(description="Graph partitioning for ogbn-arxiv and ogbn-products")
 
@@ -37,7 +51,7 @@ parser.add_argument(
     "--dataset-name",
     type=str,
     default="ogbn-arxiv",
-    choices=['ogbn-arxiv', 'ogbn-products'],
+    choices=['ogbn-arxiv', 'ogbn-products', 'ogbn-mag', 'cora', 'citeseer', 'pubmed'],
     help="Dataset name. ogbn-arxiv or ogbn-products "
 )
 
@@ -55,37 +69,71 @@ parser.add_argument(
     type=int,
     help='Number of graph partitions to generate')
 
+def get_dataset(args):
+    dataset_name = args.dataset_name
+    if dataset_name in ['cora', 'citeseer', 'pubmed']:
+        return SUPPORTED_DATASETS[dataset_name](args.dataset_root)
+    else:
+        return SUPPORTED_DATASETS[dataset_name](dataset_name, args.dataset_root)
 
-def main():
-    args = parser.parse_args()
-    dataset = DglNodePropPredDataset(name=args.dataset_name,
-                                     root=args.dataset_root)
-    graph = dataset[0][0]
-    graph = dgl.to_bidirected(graph, copy_ndata=True)
-    graph = dgl.add_self_loop(graph)
+def prepare_features(args, dataset, graph):
+    if args.dataset_name in ['cora', 'citeseer', 'pubmed']:
+        assert all([x in graph.ndata.keys() for x in ['train_mask', 'val_mask', 'test_mask']])
+        return
 
-    labels = dataset[0][1].view(-1)
     split_idx = dataset.get_idx_split()
+    ntype = 'paper' if args.dataset_name == 'ogbn-mag' else None
 
-    def _idx_to_mask(idx_tensor):
-        mask = torch.BoolTensor(graph.number_of_nodes()).fill_(False)
-        mask[idx_tensor] = True
+    def idx_to_mask(idx_tensor):
+        mask = torch.BoolTensor(graph.number_of_nodes(ntype)).fill_(False)
+        if ntype:
+            mask[idx_tensor[ntype]] = True
+        else:
+            mask[idx_tensor] = True
         return mask
 
     train_mask, val_mask, test_mask = map(
-        _idx_to_mask, [split_idx['train'], split_idx['valid'], split_idx['test']])
-    features = graph.ndata['feat']
+        idx_to_mask, [split_idx['train'], split_idx['valid'], split_idx['test']])
+
+    if 'feat' in graph.ndata.keys():
+        features = graph.ndata['feat']
+    else:
+        features = graph.ndata['features']
+
     graph.ndata.clear()
+
+    labels = dataset[0][1]
+    if ntype:
+        features = features[ntype]
+        labels = labels[ntype]
+    labels = labels.view(-1)
+
     for name, val in zip(['train_mask', 'val_mask', 'test_mask', 'labels', 'features'],
                          [train_mask, val_mask, test_mask, labels, features]):
-        graph.ndata[name] = val
+        graph.ndata[name] = {ntype: val} if ntype else val
 
+def main():
+    args = parser.parse_args()
+    dataset = get_dataset(args)
+    dataset_name = args.dataset_name
+    if dataset_name.startswith('ogbn'):
+        graph = dataset[0][0]
+    else:
+        graph = dataset[0]
+
+    if dataset_name != 'ogbn-mag':
+        graph = dgl.remove_self_loop(graph)
+        graph = dgl.to_bidirected(graph, copy_ndata=True)
+        graph = dgl.add_self_loop(graph)
+
+    prepare_features(args, dataset, graph)
+    balance_ntypes = graph.ndata['train_mask'] if dataset_name in ['ogbn-products', 'ogbn-arxiv'] else None
     dgl.distributed.partition_graph(
         graph, args.dataset_name,
         args.num_partitions,
         args.partition_out_path,
         num_hops=1,
-        balance_ntypes=train_mask,
+        balance_ntypes=balance_ntypes,
         balance_edges=True)
 
 
