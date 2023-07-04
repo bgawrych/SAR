@@ -1,4 +1,4 @@
-
+TEST
 [Documentation](https://sar.readthedocs.io/en/latest/) | [Examples](examples/README.md)
 
 SAR is a pure Python library for distributed training of Graph Neural Networks (GNNs) on large graphs. SAR is built on top of PyTorch and DGL and supports distributed full-batch training as well as distributed sampling-based training. SAR is particularly suited for training GNNs on large graphs as the graph is partitioned across the training machines. In full-batch training, SAR can utilize the [sequential aggregation and rematerialization technique](https://proceedings.mlsys.org/paper/2022/hash/5fd0b37cd7dbbb00f97ba6ce92bf5add-Abstract.html) to guarantees linear memory scaling, i.e, the memory needed to store the GNN activiations in each host is guaranteed to go down linearly with the number of hosts, even for densely connected graphs.
